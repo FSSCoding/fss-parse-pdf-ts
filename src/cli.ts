@@ -6,6 +6,7 @@ import ora from 'ora';
 import * as fs from 'fs';
 import * as path from 'path';
 import { PdfParser } from './pdf-parser';
+import { PdfGenerator, GenerationConfig } from './pdf-generator';
 import { PdfConfig } from './types';
 
 const program = new Command();
@@ -263,6 +264,119 @@ program
 
     } catch (error) {
       spinner.fail('Validation failed');
+      console.error(chalk.red(error instanceof Error ? error.message : 'Unknown error'));
+      process.exit(1);
+    }
+  });
+
+program
+  .command('generate')
+  .description('Generate professional PDF from Markdown or text')
+  .argument('<input>', 'Input file path (Markdown, text, etc.)')
+  .argument('<output>', 'Output PDF file path')
+  .option('-t, --template <template>', 'Template to use', 'eisvogel')
+  .option('-e, --engine <engine>', 'PDF engine to use', 'auto')
+  .option('--font-main <font>', 'Main font family', 'Liberation Sans')
+  .option('--font-code <font>', 'Code font family', 'Liberation Mono')
+  .option('--font-size <size>', 'Font size', '11')
+  .option('--margins <margins>', 'Page margins (narrow|normal|wide)', 'normal')
+  .option('--toc', 'Include table of contents')
+  .option('--number-sections', 'Number sections')
+  .option('--syntax-highlighting', 'Enable syntax highlighting', true)
+  .option('--bibliography <file>', 'Bibliography file')
+  .option('--color-theme <theme>', 'Color theme', 'professional')
+  .action(async (input: string, output: string, options: any) => {
+    const spinner = ora(`Generating PDF with ${options.template} template...`).start();
+
+    try {
+      const config: GenerationConfig = {
+        template: options.template,
+        engine: options.engine,
+        fontMain: options.fontMain,
+        fontCode: options.fontCode,
+        fontSize: parseInt(options.fontSize),
+        margins: options.margins,
+        includeToc: options.toc || false,
+        numberSections: options.numberSections || false,
+        syntaxHighlighting: options.syntaxHighlighting,
+        bibliography: options.bibliography,
+        colorTheme: options.colorTheme
+      };
+
+      const generator = new PdfGenerator();
+      const result = await generator.generatePdf(input, output, config);
+
+      if (result.success) {
+        spinner.succeed(`PDF generated successfully: ${chalk.green(output)}`);
+        
+        console.log(chalk.blue('\n📊 Generation Details:'));
+        console.log(`  Template: ${result.templateUsed}`);
+        console.log(`  Engine: ${result.engineUsed}`);
+        console.log(`  Time: ${(result.generationTime / 1000).toFixed(2)}s`);
+        
+        if (result.warnings.length > 0) {
+          console.log(chalk.yellow('\n⚠️  Warnings:'));
+          result.warnings.forEach(warning => console.log(chalk.yellow(`  • ${warning}`)));
+        }
+      } else {
+        spinner.fail('PDF generation failed');
+        if (result.errors.length > 0) {
+          console.log(chalk.red('\nErrors:'));
+          result.errors.forEach(error => console.log(chalk.red(`  • ${error}`)));
+        }
+        process.exit(1);
+      }
+
+    } catch (error) {
+      spinner.fail('Generation failed');
+      console.error(chalk.red(error instanceof Error ? error.message : 'Unknown error'));
+      process.exit(1);
+    }
+  });
+
+program
+  .command('templates')
+  .description('List available templates and engines')
+  .option('--engines', 'Show PDF engines information')
+  .action(async (options: any) => {
+    const spinner = ora('Loading template information...').start();
+
+    try {
+      const generator = new PdfGenerator();
+      const templates = generator.listTemplates();
+      
+      spinner.stop();
+      
+      console.log(chalk.blue.bold('\n📄 Available PDF Templates:'));
+      console.log(chalk.gray('─'.repeat(80)));
+      
+      Object.entries(templates).forEach(([id, info]) => {
+        const status = info.installed ? chalk.green('✅ Installed') : chalk.red('❌ Not Installed');
+        const engines = info.engines.join(', ');
+        
+        console.log(`\n${chalk.cyan.bold(id)}: ${info.name}`);
+        console.log(`  Status: ${status}`);
+        console.log(`  Engines: ${chalk.yellow(engines)}`);
+        console.log(`  Description: ${info.description}`);
+      });
+      
+      if (options.engines) {
+        const engines = await generator.getEngineInfo();
+        
+        console.log(chalk.blue.bold('\n⚙️  Available PDF Engines:'));
+        console.log(chalk.gray('─'.repeat(80)));
+        
+        Object.entries(engines).forEach(([name, info]) => {
+          const status = info.available ? chalk.green('✅ Available') : chalk.red('❌ Not Available');
+          
+          console.log(`\n${chalk.cyan.bold(name)}`);
+          console.log(`  Status: ${status}`);
+          console.log(`  Description: ${info.description}`);
+        });
+      }
+
+    } catch (error) {
+      spinner.fail('Failed to load template information');
       console.error(chalk.red(error instanceof Error ? error.message : 'Unknown error'));
       process.exit(1);
     }

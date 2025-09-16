@@ -7,10 +7,15 @@ export class SafetyManager {
   private maxFileSize: number;
   private allowedExtensions: Set<string>;
   private backupDir: string;
+  private generationMode: boolean;
 
-  constructor() {
+  constructor(generationMode: boolean = false) {
     this.maxFileSize = 100 * 1024 * 1024; // 100MB
-    this.allowedExtensions = new Set(['.pdf']);
+    this.generationMode = generationMode;
+    // Allow markdown/text inputs for generation, PDFs for extraction
+    this.allowedExtensions = generationMode 
+      ? new Set(['.md', '.markdown', '.txt', '.text'])
+      : new Set(['.pdf']);
     this.backupDir = path.join(process.cwd(), '.fss-pdf-backups');
   }
 
@@ -38,8 +43,8 @@ export class SafetyManager {
       const fileBuffer = fs.readFileSync(filePath);
       const hash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
 
-      // PDF-specific validation
-      if (!this.validatePdfHeader(fileBuffer)) {
+      // PDF-specific validation (only for extraction mode)
+      if (!this.generationMode && !this.validatePdfHeader(fileBuffer)) {
         issues.push('Invalid PDF file format');
       }
 
