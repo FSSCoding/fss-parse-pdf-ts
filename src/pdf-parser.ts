@@ -94,14 +94,37 @@ export class PdfParser {
     if (info.Keywords) metadata.keywords = info.Keywords;
     
     if (info.CreationDate) {
-      metadata.creationDate = new Date(info.CreationDate);
+      metadata.creationDate = this.parseDate(info.CreationDate);
     }
     
     if (info.ModDate) {
-      metadata.modificationDate = new Date(info.ModDate);
+      metadata.modificationDate = this.parseDate(info.ModDate);
     }
 
     return metadata;
+  }
+
+  private parseDate(dateString: string): Date | null {
+    try {
+      // PDF dates can be in format: D:YYYYMMDDHHmmSSOHH'mm'
+      if (dateString.startsWith('D:')) {
+        const cleanDate = dateString.substring(2, 16); // YYYYMMDDHHMMSS
+        const year = parseInt(cleanDate.substring(0, 4));
+        const month = parseInt(cleanDate.substring(4, 6)) - 1; // Month is 0-indexed
+        const day = parseInt(cleanDate.substring(6, 8));
+        const hour = parseInt(cleanDate.substring(8, 10)) || 0;
+        const minute = parseInt(cleanDate.substring(10, 12)) || 0;
+        const second = parseInt(cleanDate.substring(12, 14)) || 0;
+        
+        return new Date(year, month, day, hour, minute, second);
+      }
+      
+      // Try standard date parsing
+      const date = new Date(dateString);
+      return isNaN(date.getTime()) ? null : date;
+    } catch (error) {
+      return null;
+    }
   }
 
   private async extractPageInfo(_pdfBuffer: Buffer, pdfData: any): Promise<PageInfo[]> {

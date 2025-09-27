@@ -124,9 +124,13 @@ program
           }
           if (result.metadata.creationDate) {
             console.log(`${chalk.yellow('Created:')} ${result.metadata.creationDate.toLocaleDateString()}`);
+          } else {
+            console.log(`${chalk.yellow('Created:')} Not available`);
           }
           if (result.metadata.modificationDate) {
             console.log(`${chalk.yellow('Modified:')} ${result.metadata.modificationDate.toLocaleDateString()}`);
+          } else {
+            console.log(`${chalk.yellow('Modified:')} Not available`);
           }
           if (result.metadata.encrypted !== undefined) {
             console.log(`${chalk.yellow('Encrypted:')} ${result.metadata.encrypted ? 'Yes' : 'No'}`);

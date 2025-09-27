@@ -14,8 +14,8 @@ export interface PdfMetadata {
   subject?: string;
   creator?: string;
   producer?: string;
-  creationDate?: Date;
-  modificationDate?: Date;
+  creationDate?: Date | null;
+  modificationDate?: Date | null;
   keywords?: string;
   pageCount?: number;
   encrypted?: boolean;
