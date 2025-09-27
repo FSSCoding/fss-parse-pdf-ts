@@ -7,6 +7,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { PdfParser } from './pdf-parser';
 import { PdfGenerator, GenerationConfig } from './pdf-generator';
+import { PDFModifier, SignatureOptions, FormFillData, TextInsertion, ImageInsertion } from './pdf-modifier';
 import { PdfConfig } from './types';
 
 const program = new Command();
@@ -396,5 +397,427 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error(chalk.red('Unhandled Rejection at:'), promise, 'reason:', reason);
   process.exit(1);
 });
+
+program
+  .command('modify')
+  .description('Modify PDF by adding signatures, filling forms, or inserting text/images')
+  .argument('<input>', 'Input PDF file path')
+  .argument('<output>', 'Output PDF file path')
+  .option('--add-signature <path>', 'Add signature image to PDF')
+  .option('--signature-position <coords>', 'Signature position as x1,y1,x2,y2', '400,700,500,750')
+  .option('--fill-form <field:value>', 'Fill form field as field_name:value', [])
+  .option('--add-text <text>', 'Add text to PDF')
+  .option('--text-position <coords>', 'Text position as x,y', '100,100')
+  .option('--text-page <number>', 'Page number for text (0-based)', '0')
+  .option('--font-size <size>', 'Font size for text', '12')
+  .action(async (input: string, output: string, options: any) => {
+    const spinner = ora('Modifying PDF...').start();
+
+    try {
+      const modifier = new PDFModifier();
+      
+      // Parse options
+      const signatures: SignatureOptions[] = [];
+      const formData: FormFillData[] = [];
+      const textInsertions: TextInsertion[] = [];
+      const imageInsertions: ImageInsertion[] = [];
+
+      // Handle signature addition
+      if (options.addSignature) {
+        const positionParts = options.signaturePosition.split(',').map((x: string) => parseFloat(x.trim()));
+        if (positionParts.length !== 4) {
+          throw new Error('Signature position must be x1,y1,x2,y2');
+        }
+        
+        signatures.push({
+          position: positionParts as [number, number, number, number],
+          imagePath: options.addSignature
+        });
+      }
+
+      // Handle form filling (support multiple --fill-form options)
+      const fillFormOptions = Array.isArray(options.fillForm) ? options.fillForm : [options.fillForm].filter(Boolean);
+      for (const formItem of fillFormOptions) {
+        if (typeof formItem === 'string' && formItem.includes(':')) {
+          const [fieldName, ...valueParts] = formItem.split(':');
+          const fieldValue = valueParts.join(':').trim();
+          formData.push({
+            fieldName: fieldName.trim(),
+            fieldValue
+          });
+        }
+      }
+
+      // Handle text insertion
+      if (options.addText) {
+        const positionParts = options.textPosition.split(',').map((x: string) => parseFloat(x.trim()));
+        if (positionParts.length !== 2) {
+          throw new Error('Text position must be x,y');
+        }
+        
+        textInsertions.push({
+          text: options.addText,
+          position: positionParts as [number, number],
+          pageNumber: parseInt(options.textPage),
+          fontSize: parseInt(options.fontSize)
+        });
+      }
+
+      if (signatures.length === 0 && formData.length === 0 && textInsertions.length === 0 && imageInsertions.length === 0) {
+        spinner.fail('No modifications specified. Use --help to see available options.');
+        return;
+      }
+
+      // Perform modifications
+      const result = await modifier.modifyPdf({
+        inputPath: input,
+        outputPath: output,
+        signatures,
+        formData,
+        textInsertions,
+        imageInsertions
+      });
+
+      if (result.success) {
+        spinner.succeed('PDF modified successfully!');
+        console.log(chalk.green(`📄 Output: ${result.outputPath}`));
+        console.log(chalk.blue(`📊 ${result.modificationsApplied} total modifications applied`));
+        console.log(chalk.blue(`⏱️  Processing time: ${result.processingTime}ms`));
+        
+        if (result.signaturesAdded > 0) {
+          console.log(chalk.green(`✍️  ${result.signaturesAdded} signature(s) added`));
+        }
+        if (result.formsFilled > 0) {
+          console.log(chalk.green(`📝 ${result.formsFilled} form field(s) filled`));
+        }
+        if (result.textInsertions > 0) {
+          console.log(chalk.green(`📄 ${result.textInsertions} text element(s) inserted`));
+        }
+        if (result.imageInsertions > 0) {
+          console.log(chalk.green(`🖼️  ${result.imageInsertions} image(s) inserted`));
+        }
+      } else {
+        spinner.fail(`PDF modification failed: ${result.errorMessage}`);
+        process.exit(1);
+      }
+      
+    } catch (error) {
+      spinner.fail(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('batch-modify')
+  .description('Batch modify multiple PDF files with same modifications')
+  .argument('<inputDir>', 'Input directory containing PDF files')
+  .argument('<outputDir>', 'Output directory for modified PDFs')
+  .option('--pattern <pattern>', 'File pattern to match', '*.pdf')
+  .option('--add-signature <path>', 'Add signature image to all PDFs')
+  .option('--signature-position <coords>', 'Signature position as x1,y1,x2,y2', '400,700,500,750')
+  .option('--fill-form <field:value>', 'Fill form field as field_name:value', [])
+  .option('--add-text <text>', 'Add text to all PDFs')
+  .option('--text-position <coords>', 'Text position as x,y', '100,100')
+  .option('--text-page <number>', 'Page number for text (0-based)', '0')
+  .option('--font-size <size>', 'Font size for text', '12')
+  .option('--all-pages', 'Apply text/signature to all pages', false)
+  .option('--config <path>', 'JSON configuration file for complex modifications')
+  .option('--template <name>', 'Use predefined modification template')
+  .option('--preview-only', 'Preview modifications without applying', false)
+  .option('--parallel', 'Process files in parallel', false)
+  .action(async (inputDir: string, outputDir: string, options: any) => {
+    const spinner = ora('Finding PDF files...').start();
+
+    try {
+      const glob = require('glob');
+      const path = require('path');
+      
+      // Create output directory
+      if (!fs.existsSync(outputDir)) {
+        fs.mkdirSync(outputDir, { recursive: true });
+      }
+
+      // Find matching files
+      const pattern = path.join(inputDir, options.pattern);
+      const files = glob.sync(pattern).filter((file: string) => file.toLowerCase().endsWith('.pdf'));
+
+      if (files.length === 0) {
+        spinner.fail(`No PDF files matching '${options.pattern}' found in ${inputDir}`);
+        return;
+      }
+
+      spinner.succeed(`Found ${files.length} PDF files to modify`);
+
+      // Load configuration or template
+      let modifications: any = {};
+      
+      if (options.config) {
+        modifications = JSON.parse(fs.readFileSync(options.config, 'utf8'));
+        console.log(chalk.blue(`Loaded configuration from ${options.config}`));
+      }
+
+      if (options.template) {
+        const templateConfig = loadModificationTemplate(options.template);
+        if (templateConfig) {
+          modifications = { ...modifications, ...templateConfig };
+          console.log(chalk.blue(`Applied template: ${options.template}`));
+        } else {
+          console.log(chalk.yellow(`Unknown template: ${options.template}`));
+        }
+      }
+
+      // Build modifications from CLI args if no config/template
+      if (Object.keys(modifications).length === 0) {
+        const signatures: SignatureOptions[] = [];
+        const formData: FormFillData[] = [];
+        const textInsertions: TextInsertion[] = [];
+
+        if (options.addSignature) {
+          const positionParts = options.signaturePosition.split(',').map((x: string) => parseFloat(x.trim()));
+          signatures.push({
+            position: positionParts as [number, number, number, number],
+            imagePath: options.addSignature
+          });
+        }
+
+        const fillFormOptions = Array.isArray(options.fillForm) ? options.fillForm : [options.fillForm].filter(Boolean);
+        for (const formItem of fillFormOptions) {
+          if (typeof formItem === 'string' && formItem.includes(':')) {
+            const [fieldName, ...valueParts] = formItem.split(':');
+            formData.push({
+              fieldName: fieldName.trim(),
+              fieldValue: valueParts.join(':').trim()
+            });
+          }
+        }
+
+        if (options.addText) {
+          const positionParts = options.textPosition.split(',').map((x: string) => parseFloat(x.trim()));
+          textInsertions.push({
+            text: options.addText,
+            position: positionParts as [number, number],
+            pageNumber: parseInt(options.textPage),
+            fontSize: parseInt(options.fontSize)
+          });
+        }
+
+        modifications = { signatures, formData, textInsertions, allPages: options.allPages };
+      }
+
+      if (options.previewOnly) {
+        console.log(chalk.yellow('PREVIEW MODE - No files will be modified'));
+        console.log(chalk.blue('Modifications to apply:'));
+        previewModifications(modifications);
+        return;
+      }
+
+      // Process files
+      const results: any[] = [];
+      const modifier = new PDFModifier();
+
+      if (options.parallel && files.length > 1) {
+        console.log(chalk.blue(`Processing ${files.length} files in parallel...`));
+        
+        const promises = files.map(async (file: string) => {
+          try {
+            const outputFile = path.join(outputDir, path.basename(file));
+            
+            let result;
+            if (options.allPages && modifications.textInsertions?.length > 0) {
+              result = await applyModificationsAllPages(modifier, file, outputFile, modifications);
+            } else {
+              result = await modifier.modifyPdf({
+                inputPath: file,
+                outputPath: outputFile,
+                signatures: modifications.signatures || [],
+                formData: modifications.formData || [],
+                textInsertions: modifications.textInsertions || []
+              });
+            }
+
+            if (result.success) {
+              return { file: path.basename(file), status: 'success', modifications: result.modificationsApplied, time: result.processingTime };
+            } else {
+              return { file: path.basename(file), status: 'failed', error: result.errorMessage };
+            }
+          } catch (error) {
+            return { file: path.basename(file), status: 'failed', error: error instanceof Error ? error.message : 'Unknown error' };
+          }
+        });
+
+        const parallelSpinner = ora('Processing files in parallel...').start();
+        results.push(...await Promise.all(promises));
+        parallelSpinner.succeed('Parallel processing complete');
+      } else {
+        console.log(chalk.blue(`Processing ${files.length} files sequentially...`));
+        
+        for (const file of files) {
+          try {
+            const outputFile = path.join(outputDir, path.basename(file));
+            
+            let result;
+            if (options.allPages && modifications.textInsertions?.length > 0) {
+              result = await applyModificationsAllPages(modifier, file, outputFile, modifications);
+            } else {
+              result = await modifier.modifyPdf({
+                inputPath: file,
+                outputPath: outputFile,
+                signatures: modifications.signatures || [],
+                formData: modifications.formData || [],
+                textInsertions: modifications.textInsertions || []
+              });
+            }
+
+            if (result.success) {
+              console.log(chalk.green(`✅ ${path.basename(file)} - ${result.modificationsApplied} modifications applied`));
+              results.push({ file: path.basename(file), status: 'success', modifications: result.modificationsApplied, time: result.processingTime });
+            } else {
+              console.log(chalk.red(`❌ ${path.basename(file)} - ${result.errorMessage}`));
+              results.push({ file: path.basename(file), status: 'failed', error: result.errorMessage });
+            }
+          } catch (error) {
+            const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+            console.log(chalk.red(`❌ ${path.basename(file)} - ${errorMsg}`));
+            results.push({ file: path.basename(file), status: 'failed', error: errorMsg });
+          }
+        }
+      }
+
+      // Print summary
+      const successful = results.filter(r => r.status === 'success').length;
+      const failed = results.length - successful;
+      const totalModifications = results.filter(r => r.status === 'success').reduce((sum, r) => sum + (r.modifications || 0), 0);
+
+      console.log(chalk.green('\nBatch modification complete!'));
+      console.log(chalk.green(`✅ Successful: ${successful}/${files.length}`));
+      console.log(chalk.blue(`📊 Total modifications applied: ${totalModifications}`));
+      if (failed > 0) {
+        console.log(chalk.red(`❌ Failed: ${failed}`));
+      }
+
+    } catch (error) {
+      spinner.fail(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      process.exit(1);
+    }
+  });
+
+// Helper functions
+function loadModificationTemplate(templateName: string): any {
+  const templates: Record<string, any> = {
+    'approval-stamp': {
+      textInsertions: [
+        {
+          text: 'APPROVED',
+          position: [450, 50],
+          fontSize: 16
+        },
+        {
+          text: `Date: ${new Date().toISOString().split('T')[0]}`,
+          position: [450, 30],
+          fontSize: 10
+        }
+      ]
+    },
+    'confidential-watermark': {
+      textInsertions: [
+        {
+          text: 'CONFIDENTIAL',
+          position: [200, 400],
+          fontSize: 48
+        }
+      ],
+      allPages: true
+    },
+    'signature-bottom-right': {
+      signatures: [
+        {
+          position: [400, 50, 500, 100],
+          text: 'Authorized Signature'
+        }
+      ]
+    },
+    'review-stamp': {
+      textInsertions: [
+        {
+          text: 'REVIEWED',
+          position: [50, 50],
+          fontSize: 12
+        },
+        {
+          text: `Agent 2 - ${new Date().toISOString().split('T')[0]} ${new Date().toTimeString().split(' ')[0]}`,
+          position: [50, 30],
+          fontSize: 8
+        }
+      ]
+    }
+  };
+
+  return templates[templateName];
+}
+
+function previewModifications(modifications: any): void {
+  if (modifications.signatures?.length > 0) {
+    console.log(`  📝 ${modifications.signatures.length} signature(s)`);
+    for (const sig of modifications.signatures) {
+      if (sig.imagePath) {
+        console.log(`    • Image signature: ${sig.imagePath}`);
+      } else if (sig.text) {
+        console.log(`    • Text signature: ${sig.text}`);
+      }
+    }
+  }
+
+  if (modifications.formData?.length > 0) {
+    console.log(`  📋 ${modifications.formData.length} form field(s)`);
+    for (const form of modifications.formData) {
+      console.log(`    • ${form.fieldName}: ${form.fieldValue}`);
+    }
+  }
+
+  if (modifications.textInsertions?.length > 0) {
+    console.log(`  📄 ${modifications.textInsertions.length} text insertion(s)`);
+    for (const text of modifications.textInsertions) {
+      console.log(`    • '${text.text}' at [${text.position[0]}, ${text.position[1]}]`);
+    }
+  }
+
+  if (modifications.allPages) {
+    console.log(`  🔄 Apply to all pages: Yes`);
+  }
+}
+
+async function applyModificationsAllPages(modifier: PDFModifier, inputPath: string, outputPath: string, modifications: any): Promise<any> {
+  const { PDFDocument } = require('pdf-lib');
+  const fs = require('fs');
+  
+  // Get page count first
+  const existingPdfBytes = fs.readFileSync(inputPath);
+  const pdfDoc = await PDFDocument.load(existingPdfBytes);
+  const pageCount = pdfDoc.getPageCount();
+
+  // Create text insertions for all pages
+  const allTextInsertions: TextInsertion[] = [];
+  const baseTextInsertions = modifications.textInsertions || [];
+
+  for (let pageNum = 0; pageNum < pageCount; pageNum++) {
+    for (const textItem of baseTextInsertions) {
+      allTextInsertions.push({
+        text: textItem.text,
+        position: textItem.position,
+        pageNumber: pageNum,
+        fontSize: textItem.fontSize
+      });
+    }
+  }
+
+  // Apply all modifications
+  return modifier.modifyPdf({
+    inputPath,
+    outputPath,
+    signatures: modifications.signatures || [],
+    formData: modifications.formData || [],
+    textInsertions: allTextInsertions
+  });
+}
 
 program.parse();
